@@ -247,6 +247,30 @@ def parseSeparatedStrings(items: list[str]) -> dict:
             d[key] = value
     return d
 
+def extract_album_date(path_chunks: list[str]) -> str:
+    """
+    Extract album date from path chunks.
+
+    Parameters
+    ----------
+        path_chunks : list[str]
+            List of path segments to process for date extraction
+
+    Returns
+    -------
+        str
+            Album date in ISO format (YYYY-MM-DDT00:00:00.000Z) if a year was found,
+            None otherwise
+    """
+    # Regex to match any four-digit year (e.g., 1900-2099 or any other four-digit number)
+    year_pattern = re.compile(r"^\d{4}$")
+
+    # Check if we have enough chunks and if second-to-last matches year pattern
+    if len(path_chunks) > 1 and year_pattern.match(path_chunks[-2]):
+        year = path_chunks[-2]
+        return f"{year}-01-01T00:00:00.000Z"
+    return None
+
 def create_album_name(path_chunks: list[str], album_separator: str) -> str:
     """
     Create album names from provided path_chunks string array.
@@ -965,9 +989,14 @@ for asset in assets:
 
         # remove last item from path chunks, which is the file name
         del path_chunks[-1]
+        # Extract album date before creating album name
+        album_date = extract_album_date(path_chunks)
         album_name = create_album_name(path_chunks, album_level_separator)
         if len(album_name) > 0:
             album_to_assets[album_name].append(asset['id'])
+            # Store the album date in a separate dictionary
+            if album_date:
+                album_dates[album_name] = album_date
         else:
             logging.warning("Got empty album name for asset path %s, check your album_level settings!", asset_path)
 
@@ -1035,10 +1064,12 @@ created_albums = dict()
 for album in album_to_assets:
     if album in album_to_id:
         continue
-    album_id = createAlbum(album, album_order)
+    # Get the album date if it exists
+    album_date = album_dates.get(album)
+    album_id = createAlbum(album, album_order, album_date)
     album_to_id[album] = album_id
     created_albums[album] = album_id
-    logging.info('Album %s added!', album)
+    logging.info('Album %s added with date %s!', album, album_date if album_date else "not set")
 logging.info("%d albums created", len(created_albums))
 
 # Share newly created albums with users
