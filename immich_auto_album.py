@@ -1,4 +1,3 @@
-
 from typing import Tuple
 import requests
 import argparse
@@ -189,10 +188,10 @@ requests_kwargs = {
 }
 
 def expand_to_glob(expr: str) -> str:
-    """ 
+    """
     Expands the passed expression to a glob-style
     expression if it doesn't contain neither a slash nor an asterisk.
-    The resulting glob-style expression matches any path that contains the 
+    The resulting glob-style expression matches any path that contains the
     original expression anywhere.
 
     Parameters
@@ -212,16 +211,16 @@ def expand_to_glob(expr: str) -> str:
     else:
         return expr
 
-def divide_chunks(l: list, n: int): 
+def divide_chunks(l: list, n: int):
     """Yield successive n-sized chunks from l. """
-    # looping till length l 
-    for i in range(0, len(l), n):  
+    # looping till length l
+    for i in range(0, len(l), n):
         yield l[i:i + n]
 
 def parseSeparatedString(s: str, seprator: str) -> Tuple[str, str]:
     """
     Parse a key, value pair, separated by the provided separator.
-    
+
     That's the reverse of ShellArgs.
     On the command line (argparse) a declaration will typically look like:
         foo=hello
@@ -247,47 +246,46 @@ def parseSeparatedStrings(items: list[str]) -> dict:
             key, value = parseSeparatedString(item, '=')
             d[key] = value
     return d
-  
+
 def create_album_name(path_chunks: list[str], album_separator: str) -> str:
     """
     Create album names from provided path_chunks string array.
 
     The method uses global variables album_levels_range_arr or album_levels to
-    generate ablum names either by level range or absolute album levels. If multiple
+    generate album names either by level range or absolute album levels. If multiple
     album path chunks are used for album names they are separated by album_separator.
     """
 
     album_name_chunks = ()
     logging.debug("path chunks = %s", list(path_chunks))
+
+    # Regex to match any four-digit year (e.g., 1900-2099 or any other four-digit number)
+    year_pattern = re.compile(r"^\d{4}$")
+
     # Check which path to take: album_levels_range or album_levels
     if len(album_levels_range_arr) == 2:
         if album_levels_range_arr[0] < 0:
             album_levels_start_level_capped = min(len(path_chunks), abs(album_levels_range_arr[0]))
-            album_levels_end_level_capped =  album_levels_range_arr[1]+1
+            album_levels_end_level_capped = album_levels_range_arr[1] + 1
             album_levels_start_level_capped *= -1
         else:
-            album_levels_start_level_capped = min(len(path_chunks)-1, album_levels_range_arr[0])
-            # Add 1 to album_levels_end_level_capped to include the end index, which is what the user intended to. It's not a problem
-            # if the end index is out of bounds.
-            album_levels_end_level_capped =  min(len(path_chunks)-1, album_levels_range_arr[1]) + 1
+            album_levels_start_level_capped = min(len(path_chunks) - 1, album_levels_range_arr[0])
+            album_levels_end_level_capped = min(len(path_chunks) - 1, album_levels_range_arr[1]) + 1
+
         logging.debug("album_levels_start_level_capped = %d", album_levels_start_level_capped)
         logging.debug("album_levels_end_level_capped = %d", album_levels_end_level_capped)
-        # album start level is not equal to album end level, so we want a range of levels
-        if album_levels_start_level_capped is not album_levels_end_level_capped:
-            
-            # if the end index is out of bounds.
-            if album_levels_end_level_capped < 0 and abs(album_levels_end_level_capped) >= len(path_chunks):
-                album_name_chunks = path_chunks[album_levels_start_level_capped:]
-            else:
-                album_name_chunks = path_chunks[album_levels_start_level_capped:album_levels_end_level_capped]
-        # album start and end levels are equal, we want exactly that level
-        else:
-            # create on-the-fly array with a single element taken from 
-            album_name_chunks = [path_chunks[album_levels_start_level_capped]]
+
+        # Get the selected range of path chunks
+        selected_path_chunks = path_chunks[album_levels_start_level_capped:album_levels_end_level_capped]
+
+        # If the second-to-last chunk matches the year pattern, omit it
+        if len(selected_path_chunks) > 1 and year_pattern.match(selected_path_chunks[-2]):
+            selected_path_chunks.pop(-2)
+
+        album_name_chunks = selected_path_chunks
+
     else:
         album_levels_int = int(album_levels)
-        # either use as many path chunks as we have,
-        # or the specified album levels
         album_name_chunk_size = min(len(path_chunks), abs(album_levels_int))
         if album_levels_int < 0:
             album_name_chunk_size *= -1
@@ -296,6 +294,11 @@ def create_album_name(path_chunks: list[str], album_separator: str) -> str:
         album_name_chunks = path_chunks[:album_name_chunk_size]
         if album_name_chunk_size < 0:
             album_name_chunks = path_chunks[album_name_chunk_size:]
+
+        # If the second-to-last chunk matches the year pattern, omit it
+        if len(album_name_chunks) > 1 and year_pattern.match(album_name_chunks[-2]):
+            album_name_chunks.pop(-2)
+
     logging.debug("album_name_chunks = %s", album_name_chunks)
     return album_separator.join(album_name_chunks)
 
@@ -305,10 +308,10 @@ def fetchServerVersion() -> dict:
 
     If the API endpoint for getting the server version cannot be reached,
     raises HTTPError
-    
+
     Returns
     -------
-        Dictionary with keys 
+        Dictionary with keys
             - major
             - minor
             - patch
@@ -320,7 +323,7 @@ def fetchServerVersion() -> dict:
     if r.status_code == 404:
         api_endpoint = f'{root_url}server-info/version'
         r = requests.get(api_endpoint, **requests_kwargs)
-    
+
     if r.status_code == 200:
         version = r.json()
         logging.info("Detected Immich server version %s.%s.%s", version['major'], version['minor'], version['patch'])
@@ -337,12 +340,12 @@ def fetchAssets(isNotInAlbum: bool, findArchived: bool) -> list:
 
     Uses the /search/meta-data call. Much more efficient than the legacy method
     since this call allows to filter for assets that are not in an album only.
-    
+
     Parameters
     ----------
         isNotInAlbum : bool
             Flag indicating whether to fetch only assets that are not part
-            of an album or not. If set to False, will find images in albums and 
+            of an album or not. If set to False, will find images in albums and
             not part of albums
         findArchived : bool
             Flag indicating whether to only fetch assets that are archived. If set to False,
@@ -359,7 +362,7 @@ def fetchAssetsWithOptions(searchOptions: dict) -> list:
     """
     Fetches assets from the Immich API using specific search options.
     The search options directly correspond to the body used for the search API request.
-    
+
     Parameters
     ----------
         searchOptions: dict
@@ -427,7 +430,7 @@ def fetchAlbumAssets(albumId: str):
 def deleteAlbum(album: dict):
     """
     Deletes an album identified by album['id']
-    
+
     If the album could not be deleted, logs an error.
 
     Parameters
@@ -450,12 +453,12 @@ def deleteAlbum(album: dict):
         return True
     except:
         logging.error("Error deleting album %s: %s", album['albumName'], r.reason)
-        return False    
+        return False
 
-def createAlbum(albumName: str, albumOrder: str) -> str:
+def createAlbum(albumName: str, albumOrder: str, albumDate: str = None) -> str:
     """
     Creates an album with the provided name and returns the ID of the created album
-    
+
 
     Parameters
     ----------
@@ -467,7 +470,7 @@ def createAlbum(albumName: str, albumOrder: str) -> str:
     Returns
     ---------
         True if the album was deleted, otherwise False
-    
+
     Raises
     ----------
         Exception if the API call failed
@@ -479,6 +482,11 @@ def createAlbum(albumName: str, albumOrder: str) -> str:
         'albumName': albumName,
         'description': albumName
     }
+
+    if albumDate:
+        data['createdAt'] = albumDate
+
+
     r = requests.post(root_url+apiEndpoint, json=data, **requests_kwargs)
     checkApiResponse(r)
 
@@ -502,7 +510,7 @@ def is_asset_ignored(asset: dict) -> bool:
     ----------
         asset : dict
             The asset to check if it must be ignored or not. Must have the key 'originalPath'.
-    Returns 
+    Returns
     ----------
         True if the asset must be ignored, otherwise False
     """
@@ -543,7 +551,7 @@ def addAssetsToAlbum(albumId: str, assets: list[str]) -> list[str]:
     and one API call is performed per chunk.
     Only logs errors and successes.
 
-    Returns 
+    Returns
 
     Parameters
     ----------
@@ -606,9 +614,9 @@ def shareAlbumWithUserAndRole(album_id: str, share_user_ids: list[str], share_ro
             "viewer" or "editor"
     Raises
     ----------
-        Exception if share_role contains an invalid value  
+        Exception if share_role contains an invalid value
         Exception if the API call fails
-    """ 
+    """
 
     apiEndpoint = 'albums/'+album_id+'/users'
 
@@ -621,7 +629,7 @@ def shareAlbumWithUserAndRole(album_id: str, share_user_ids: list[str], share_ro
         share_info['role'] = share_role
         share_info['userId'] = share_user_id
         album_users.append(share_info)
-    
+
     data = {
         'albumUsers': album_users
     }
@@ -668,10 +676,10 @@ def triggerOfflineAssetRemovalSinceMinorVersion116():
     # If removed the assets for users of v1.116.0 - v1.117.x might be deleted completely!!!
     trashed_assets = fetchAssetsWithOptions({'trashedAfter': '1970-01-01T00:00:00.000Z'})
     #logging.debug("search results: %s", offline_assets)
-    
+
     offline_assets = [asset for asset in trashed_assets if asset['isOffline']]
 
-    
+
     if len(offline_assets) > 0:
         logging.debug("Deleting the following offline assets (count: %d): %s", len(offline_assets), [asset['originalPath'] for asset in offline_assets])
         deleteAssets(offline_assets, True)
@@ -712,10 +720,10 @@ def triggerOfflineAssetRemovalPreMinorVersion116():
     Triggers Offline Asset Removal Job.
     Only supported in Immich prior v1.116.0.
     Requires the script to run with an Administrator level API key.
-    
+
     Works by fetching all libraries and triggering the Offline Asset Removal job
     one by one.
-    
+
     Raises
     ----------
         HTTPException if the API call fails
@@ -727,7 +735,7 @@ def triggerOfflineAssetRemovalPreMinorVersion116():
 def fetchLibraries() -> list[dict]:
     """
     Queries and returns all libraries
-    
+
     Raises
     ----------
         Exception if any API call fails
@@ -770,7 +778,7 @@ def setAlbumThumbnail(albumId: str, assetId: str):
             The ID of the album for which to set the thumbnail
         assetId : str
             The ID of the asset to be set as thumbnail
-            
+
     Raises
     ----------
         Exception if the API call fails
@@ -792,7 +800,7 @@ def setAssetsArchived(assetIds: list[str], isArchived: bool):
             A list of asset IDs to archive
         isArchived : bool
             Flag indicating whether to archive or unarchive the passed assets
-   
+
     Raises
     ----------
         Exception if the API call fails
@@ -818,7 +826,7 @@ def checkApiResponse(response: requests.Response):
             A list of asset IDs to archive
         isArchived : bool
             Flag indicating whether to archive or unarchive the passed assets
-   
+
     Raises
     ----------
         HTTPException if the API call fails
@@ -839,12 +847,12 @@ if insecure:
 # Verify album levels range
 if not is_integer(album_levels):
     album_levels_range_split = album_levels.split(",")
-    if (len(album_levels_range_split) != 2 
-            or not is_integer(album_levels_range_split[0]) 
-            or not is_integer(album_levels_range_split[1]) 
+    if (len(album_levels_range_split) != 2
+            or not is_integer(album_levels_range_split[0])
+            or not is_integer(album_levels_range_split[1])
             or int(album_levels_range_split[0]) == 0
             or int(album_levels_range_split[1]) == 0
-            or (int(album_levels_range_split[0]) >= 0 and int(album_levels_range_split[1]) < 0) 
+            or (int(album_levels_range_split[0]) >= 0 and int(album_levels_range_split[1]) < 0)
             or (int(album_levels_range_split[0]) < 0 and int(album_levels_range_split[1]) >= 0)
             or (int(album_levels_range_split[0]) < 0 and int(album_levels_range_split[1]) < 0) and int(album_levels_range_split[0]) > int(album_levels_range_split[1])):
         logging.error("Invalid album_levels range format! If a range should be set, the start level and end level must be separated by a comma like '<startLevel>,<endLevel>'. If negative levels are used in a range, <startLevel> must be less than or equal to <endLevel>.")
@@ -944,17 +952,17 @@ for asset in assets:
     # This method will log the ignore reason, so no need to log anyhting again.
     if is_asset_ignored(asset):
         continue
-   
+
     for root_path in root_paths:
         if root_path not in asset_path:
             continue
 
         # Chunks of the asset's path below root_path
-        path_chunks = asset_path.replace(root_path, '').split('/') 
+        path_chunks = asset_path.replace(root_path, '').split('/')
         # A single chunk means it's just the image file in no sub folder, ignore
         if len(path_chunks) == 1:
             continue
-        
+
         # remove last item from path chunks, which is the file name
         del path_chunks[-1]
         album_name = create_album_name(path_chunks, album_level_separator)
@@ -985,7 +993,7 @@ album_to_id = {album['albumName']:album['id'] for album in albums }
 logging.info("%d existing albums identified", len(albums))
 
 # mode CLEANUP
-if mode == SCRIPT_MODE_CLEANUP:  
+if mode == SCRIPT_MODE_CLEANUP:
     albums_to_delete = list()
     for album in album_to_assets:
         if album in album_to_id:
@@ -993,7 +1001,7 @@ if mode == SCRIPT_MODE_CLEANUP:
             album_to_delete['id'] = album_to_id[album]
             album_to_delete['albumName'] = album
             albums_to_delete.append(album_to_delete)
-    
+
     # Delete Confirm check
     if not delete_confirm:
         print("Would delete the following albums:")
@@ -1041,12 +1049,12 @@ if share_with is not None and len(created_albums) > 0:
     # Get all users
     users = fetchUsers()
     logging.debug("Found users: %s", users)
-    
+
     # Initialize dicitionary of share roles to user IDs to share with
     roles_for_share_user_ids = dict()
     for allowed_role in SHARE_ROLES:
         roles_for_share_user_ids[allowed_role] = list()
-    
+
     # Search user IDs of users to share with
     for share_user in share_user_roles.keys():
         role = share_user_roles[share_user]
@@ -1060,7 +1068,7 @@ if share_with is not None and len(created_albums) > 0:
             logging.warning("Passed share role %s for user %s is not allowed, defaulting to %s", role, share_user, share_role)
         else:
             logging.debug("Explicit share role %s passed for share user %s", role, share_user)
-        
+
         for user in users:
             # Search by name or mail address
             if user['name'] == share_user or user['email'] == share_user:
@@ -1071,15 +1079,15 @@ if share_with is not None and len(created_albums) > 0:
                 break
         if not found_user:
             logging.warning("User %s to share albums with does not exist!", share_user)
-            
-    
+
+
     shared_album_cnt = 0
     # Only try sharing if we found at least one user ID to share with
     for share_album in created_albums.keys():
         album_shared_successfully = False
         for role in roles_for_share_user_ids.keys():
             share_user_ids = roles_for_share_user_ids[role]
-            if len(share_user_ids) > 0:   
+            if len(share_user_ids) > 0:
                 try:
                     shareAlbumWithUserAndRole(created_albums[share_album], share_user_ids, role)
                     logging.debug("Album %s shared with users IDs %s in role: %s)", share_album, share_user_ids, role)
@@ -1093,8 +1101,8 @@ if share_with is not None and len(created_albums) > 0:
 
 
 logging.info("Adding assets to albums")
-# Note: Immich manages duplicates without problem, 
-# so we can each time ad all assets to same album, no photo will be duplicated 
+# Note: Immich manages duplicates without problem,
+# so we can each time ad all assets to same album, no photo will be duplicated
 albums_with_assets_added = list()
 asset_uuids_added = list()
 for album, assets in album_to_assets.items():
@@ -1126,7 +1134,7 @@ if set_album_thumbnail:
         assets = fetchAlbumAssets(album['id'])
         # apply filtering to assets
         if set_album_thumbnail == ALBUM_THUMBNAIL_RANDOM_FILTERED:
-            assets[:] = [asset for asset in assets if not is_asset_ignored(asset)]        
+            assets[:] = [asset for asset in assets if not is_asset_ignored(asset)]
 
         if(len(assets) > 0):
             assets.sort(key=lambda x: x['fileCreatedAt'])
@@ -1138,7 +1146,7 @@ if set_album_thumbnail:
 
             logging.info("Using asset with index %d as thumbnail for album %s", index, album['albumName'])
             setAlbumThumbnail(album['id'], assets[index]['id'])
-        
+
 # Perform sync mode action: Trigger offline asset removal
 if sync_mode == 2:
     logging.info("Trigger offline asset removal")
@@ -1148,7 +1156,7 @@ if sync_mode == 2:
 #
 # For Immich versions prior to v1.116.0:
 # Attention: Since Offline Asset Removal is an asynchronous job,
-# albums affected by it are most likely not empty yet! So this 
+# albums affected by it are most likely not empty yet! So this
 # might only be effective in the next script run.
 if sync_mode >= 1:
     logging.info("Deleting all empty albums")
