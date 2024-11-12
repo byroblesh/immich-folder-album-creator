@@ -91,6 +91,7 @@ parser.add_argument("-f", "--path-filter", action="append", help="Use either lit
 parser.add_argument("--set-album-thumbnail", choices=ALBUM_THUMBNAIL_SETTINGS, help="Set first/last/random image as thumbnail for newly created albums or albums assets have been added to. If set to "+ALBUM_THUMBNAIL_RANDOM_FILTERED+", thumbnails are shuffled for all albums whose assets would not be filtered out or ignored by the ignore or path-filter options, even if no assets were added during the run. If set to "+ALBUM_THUMBNAIL_RANDOM_ALL+", the thumbnails for ALL albums will be shuffled on every run.")
 parser.add_argument("-v", "--archive", action="store_true", help="Set this option to automatically archive all assets that were newly added to albums. If this option is set in combination with --mode = CLEANUP or DELETE_ALL, archived images of deleted albums will be unarchived. Archiving hides the assets from Immich's timeline.")
 parser.add_argument("--find-archived-assets", action="store_true", help="By default, the script only finds assets that are not archived in Immich. Set this option to make the script discover assets that are already archived. If -A/--find-assets-in-albums is set as well, both options apply.")
+parser.add_argument("--debug-limit", type=int, help="Limit the number of albums to process when running without -u/--unattended flag. Useful for testing.")
 
 
 args = vars(parser.parse_args())
@@ -141,6 +142,7 @@ path_filter = args["path_filter"]
 set_album_thumbnail = args["set_album_thumbnail"]
 archive = args["archive"]
 find_archived_assets = args["find_archived_assets"]
+debug_limit = args["debug_limit"]
 
 # Override unattended if we're running in destructive mode
 if mode != SCRIPT_MODE_CREATE:
@@ -247,28 +249,48 @@ def parseSeparatedStrings(items: list[str]) -> dict:
             d[key] = value
     return d
 
-def extract_album_date(path_chunks: list[str]) -> str:
+def extract_album_date(path_chunks: list[str], asset_list: list = None) -> str:
     """
-    Extract album date from path chunks.
+    Extract album date from path chunks and asset metadata.
 
     Parameters
     ----------
         path_chunks : list[str]
             List of path segments to process for date extraction
+        asset_list : list, optional
+            List of assets in the album to extract the earliest date from
 
     Returns
     -------
         str
-            Album date in ISO format (YYYY-MM-DDT00:00:00.000Z) if a year was found,
-            None otherwise
+            Album date in ISO format (YYYY-MM-DDT00:00:00.000Z).
+            If year is found in path, it uses that year with the date from the earliest asset.
+            If no year or no assets, returns None.
     """
     # Regex to match any four-digit year (e.g., 1900-2099 or any other four-digit number)
     year_pattern = re.compile(r"^\d{4}$")
 
-    # Check if we have enough chunks and if second-to-last matches year pattern
+    # Check if we have a year in the path
+    year = None
     if len(path_chunks) > 1 and year_pattern.match(path_chunks[-2]):
         year = path_chunks[-2]
+
+    # If we have assets, get the earliest date
+    if asset_list and len(asset_list) > 0:
+        # Sort assets by fileCreatedAt
+        sorted_assets = sorted(asset_list, key=lambda x: x['fileCreatedAt'])
+        earliest_date = datetime.datetime.fromisoformat(sorted_assets[0]['fileCreatedAt'].replace('Z', '+00:00'))
+
+        if year:
+            # Use the year from path with month/day from earliest asset
+            return f"{year}-{earliest_date.month:02d}-{earliest_date.day:02d}T00:00:00.000Z"
+        else:
+            # Use the complete date from earliest asset
+            return sorted_assets[0]['fileCreatedAt']
+    elif year:
+        # If we only have the year, use January 1st
         return f"{year}-01-01T00:00:00.000Z"
+
     return None
 
 def create_album_name(path_chunks: list[str], album_separator: str) -> str:
@@ -970,10 +992,11 @@ logging.info("%d photos found", len(assets))
 
 
 logging.info("Sorting assets to corresponding albums using folder name")
-album_to_assets = defaultdict(list)
+# Initialize defaultdict to store complete asset objects by album
+album_assets = defaultdict(list)
 for asset in assets:
     asset_path = asset['originalPath']
-    # This method will log the ignore reason, so no need to log anyhting again.
+    # This method will log the ignore reason, so no need to log anything again.
     if is_asset_ignored(asset):
         continue
 
@@ -989,16 +1012,24 @@ for asset in assets:
 
         # remove last item from path chunks, which is the file name
         del path_chunks[-1]
-        # Extract album date before creating album name
-        album_date = extract_album_date(path_chunks)
         album_name = create_album_name(path_chunks, album_level_separator)
         if len(album_name) > 0:
-            album_to_assets[album_name].append(asset['id'])
-            # Store the album date in a separate dictionary
-            if album_date:
-                album_dates[album_name] = album_date
+            # Store the complete asset object
+            album_assets[album_name].append(asset)
         else:
             logging.warning("Got empty album name for asset path %s, check your album_level settings!", asset_path)
+
+# Process albums with their assets
+album_to_assets = {}
+album_dates = {}
+for album_name, assets_list in album_assets.items():
+    # Extract date using the complete assets list
+    album_date = extract_album_date(album_name.split(album_level_separator), assets_list)
+    if album_date:
+        album_dates[album_name] = album_date
+
+    # Store just the asset IDs for the album creation
+    album_to_assets[album_name] = [asset['id'] for asset in assets_list]
 
 album_to_assets = {k:v for k, v in sorted(album_to_assets.items(), key=(lambda item: item[0]))}
 
@@ -1006,12 +1037,26 @@ logging.info("%d albums identified", len(album_to_assets))
 logging.info("Album list: %s", list(album_to_assets.keys()))
 
 if not unattended and mode == SCRIPT_MODE_CREATE:
-    if is_docker:
-        print("Check that this is the list of albums you want to create. Run the container with environment variable UNATTENDED set to 1 to actually create these albums.")
-        exit(0)
+    albums_to_show = list(album_to_assets.keys())
+    if debug_limit and len(albums_to_show) > debug_limit:
+        print(f"\nShowing first {debug_limit} of {len(albums_to_show)} albums (limited by --debug-limit):")
+        albums_to_show = albums_to_show[:debug_limit]
     else:
-        print("Press enter to create these albums, Ctrl+C to abort")
-        input()
+        print("\nAlbums to be created:")
+
+    for album_name in albums_to_show:
+        album_date = album_dates.get(album_name)
+        date_info = f" (with date: {album_date})" if album_date else " (no date set)"
+        print(f"- {album_name}{date_info}")
+
+    if debug_limit and len(album_to_assets) > debug_limit:
+        print(f"\n... and {len(album_to_assets) - debug_limit} more albums")
+
+    if is_docker:
+        print("\nCheck that this is the list of albums you want to create. Run the container with environment variable UNATTENDED set to 1 to actually create these albums.")
+    else:
+        print("\nRun with -u/--unattended flag to create these albums")
+    exit(0)
 
 album_to_id = {}
 
