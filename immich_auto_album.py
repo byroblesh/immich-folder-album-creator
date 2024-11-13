@@ -252,6 +252,8 @@ def parseSeparatedStrings(items: list[str]) -> dict:
 def extract_album_date(path_chunks: list[str], asset_list: list = None) -> str:
     """
     Extract album date from path chunks and asset metadata.
+    This functionality is prepared for future Immich API support of album dates.
+    Currently, the extracted dates cannot be set in Immich albums.
 
     Parameters
     ----------
@@ -264,16 +266,18 @@ def extract_album_date(path_chunks: list[str], asset_list: list = None) -> str:
     -------
         str
             Album date in ISO format (YYYY-MM-DDT00:00:00.000Z).
-            If year is found in path, it uses that year with the date from the earliest asset.
+            If year is found in first level path, it uses that year with the date from the earliest asset.
             If no year or no assets, returns None.
     """
     # Regex to match any four-digit year (e.g., 1900-2099 or any other four-digit number)
     year_pattern = re.compile(r"^\d{4}$")
 
-    # Check if we have a year in the path
+    # Check if we have a year in the first level of the path
     year = None
-    if len(path_chunks) > 1 and year_pattern.match(path_chunks[-2]):
-        year = path_chunks[-2]
+    if len(path_chunks) > 0 and year_pattern.match(path_chunks[0]):
+        year = path_chunks[0]
+        logging.debug("Found year %s in first level of path for album %s",
+                     year, '/'.join(path_chunks))
 
     # If we have assets, get the earliest date
     if asset_list and len(asset_list) > 0:
@@ -283,14 +287,18 @@ def extract_album_date(path_chunks: list[str], asset_list: list = None) -> str:
 
         if year:
             # Use the year from path with month/day from earliest asset
-            return f"{year}-{earliest_date.month:02d}-{earliest_date.day:02d}T00:00:00.000Z"
-        else:
-            # Use the complete date from earliest asset
-            return sorted_assets[0]['fileCreatedAt']
-    elif year:
-        # If we only have the year, use January 1st
-        return f"{year}-01-01T00:00:00.000Z"
+            album_date = f"{year}-{earliest_date.month:02d}-{earliest_date.day:02d}T00:00:00.000Z"
+            logging.debug("Created album date %s using year %s from path and date %s from asset",
+                         album_date, year, earliest_date.isoformat())
+            return album_date
 
+    if year:
+        # If we only have the year, use January 1st
+        album_date = f"{year}-01-01T00:00:00.000Z"
+        logging.debug("Created album date %s using only year from path", album_date)
+        return album_date
+
+    logging.debug("No year found in path chunks: %s", path_chunks)
     return None
 
 def create_album_name(path_chunks: list[str], album_separator: str) -> str:
@@ -503,8 +511,9 @@ def deleteAlbum(album: dict):
 
 def createAlbum(albumName: str, albumOrder: str, albumDate: str = None) -> str:
     """
-    Creates an album with the provided name and returns the ID of the created album
-
+    Creates an album with the provided name and returns the ID of the created album.
+    Note: albumDate parameter is currently stored but not used as Immich API doesn't
+    support setting album creation date. This parameter is kept for future API support.
 
     Parameters
     ----------
@@ -512,16 +521,14 @@ def createAlbum(albumName: str, albumOrder: str, albumDate: str = None) -> str:
             Name of the album to create
         albumOrder : str
             False or order [asc|desc]
+        albumDate : str
+            Album creation date in ISO format (YYYY-MM-DDT00:00:00.000Z)
+            Currently not supported by Immich API, kept for future implementation
 
     Returns
     ---------
-        True if the album was deleted, otherwise False
-
-    Raises
-    ----------
-        Exception if the API call failed
+        str: The ID of the created album
     """
-
     apiEndpoint = 'albums'
 
     data = {
@@ -529,9 +536,9 @@ def createAlbum(albumName: str, albumOrder: str, albumDate: str = None) -> str:
         'description': albumName
     }
 
+    # Store the date in debug logs for future reference
     if albumDate:
-        data['createdAt'] = albumDate
-
+        logging.debug("Album date %s stored but cannot be set (waiting for Immich API support)", albumDate)
 
     r = requests.post(root_url+apiEndpoint, json=data, **requests_kwargs)
     checkApiResponse(r)
@@ -1023,20 +1030,41 @@ for asset in assets:
 album_to_assets = {}
 album_dates = {}
 for album_name, assets_list in album_assets.items():
-    # Extract date using the complete assets list
-    album_date = extract_album_date(album_name.split(album_level_separator), assets_list)
+    # Get original path chunks for the first asset to extract the year
+    first_asset_path = assets_list[0]['originalPath']
+    for root_path in root_paths:
+        if root_path in first_asset_path:
+            path_chunks = first_asset_path.replace(root_path, '').split('/')
+            # Remove the filename
+            path_chunks = path_chunks[:-1]
+            break
+
+    # Extract date using the complete assets list and correct path chunks
+    album_date = extract_album_date(path_chunks, assets_list)
     if album_date:
         album_dates[album_name] = album_date
+        logging.debug("Set date %s for album %s", album_date, album_name)
 
     # Store just the asset IDs for the album creation
     album_to_assets[album_name] = [asset['id'] for asset in assets_list]
 
+# Sort albums by name
 album_to_assets = {k:v for k, v in sorted(album_to_assets.items(), key=(lambda item: item[0]))}
 
-logging.info("%d albums identified", len(album_to_assets))
-logging.info("Album list: %s", list(album_to_assets.keys()))
+# Apply debug limit if specified
+if debug_limit:
+    album_to_assets = dict(list(album_to_assets.items())[:debug_limit])
+    album_dates = {k: v for k, v in album_dates.items() if k in album_to_assets}
+    logging.info("%d albums identified (limited by --debug-limit)", len(album_to_assets))
+else:
+    logging.info("%d albums identified", len(album_to_assets))
+
+if album_to_assets:
+    logging.info("Album list: %s", list(album_to_assets.keys()))
 
 if not unattended and mode == SCRIPT_MODE_CREATE:
+    print("\nNote: Album dates are detected and stored for future Immich API support")
+    print("      Currently, album dates cannot be set via the API")
     albums_to_show = list(album_to_assets.keys())
     if debug_limit and len(albums_to_show) > debug_limit:
         print(f"\nShowing first {debug_limit} of {len(albums_to_show)} albums (limited by --debug-limit):")
@@ -1046,7 +1074,7 @@ if not unattended and mode == SCRIPT_MODE_CREATE:
 
     for album_name in albums_to_show:
         album_date = album_dates.get(album_name)
-        date_info = f" (with date: {album_date})" if album_date else " (no date set)"
+        date_info = f" (detected date: {album_date})" if album_date else " (no date detected)"
         print(f"- {album_name}{date_info}")
 
     if debug_limit and len(album_to_assets) > debug_limit:
@@ -1111,6 +1139,11 @@ for album in album_to_assets:
         continue
     # Get the album date if it exists
     album_date = album_dates.get(album)
+    if album_date:
+        logging.debug("Creating album '%s' with date: %s", album, album_date)
+    else:
+        logging.debug("Creating album '%s' without date", album)
+
     album_id = createAlbum(album, album_order, album_date)
     album_to_id[album] = album_id
     created_albums[album] = album_id
