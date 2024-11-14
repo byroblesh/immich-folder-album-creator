@@ -45,19 +45,16 @@ fi
 # Function to extract year from path
 get_year_from_path() {
     local file_path="$1"
-    local year_from_path
 
     # Buscar un patrón de año (19xx o 20xx) en el path
     if [[ "$file_path" =~ /(19[0-9]{2}|20[0-9]{2})/ ]]; then
-        year_from_path="${BASH_REMATCH[1]}"
         if [ "$VERBOSE" = true ]; then
-            echo "Found year in path: $year_from_path"
+            echo "Found year in path: ${BASH_REMATCH[1]}" >&2
         fi
-        echo "$year_from_path"
+        echo "${BASH_REMATCH[1]}"
         return 0
     fi
 
-    echo ""
     return 1
 }
 
@@ -68,118 +65,124 @@ get_exif_date() {
     local timestamp
     local year_to_use="$FORCE_YEAR"
 
+    # Skip @eaDir files
+    if [[ "$file" == *"@eaDir"* ]]; then
+        if [ "$VERBOSE" = true ]; then
+            echo "Skipping @eaDir file" >&2
+        fi
+        return 1
+    fi
+
     # If force folder year is enabled, try to get year from path
-    if [ "$FORCE_FOLDER_YEAR" = true ]; then
+    if [ "$FORCE_FOLDER_YEAR" = true ] && [ -z "$year_to_use" ]; then
         local path_year=$(get_year_from_path "$file")
         if [ -n "$path_year" ]; then
             year_to_use="$path_year"
             if [ "$VERBOSE" = true ]; then
-                echo "Using year from folder path: $path_year"
+                echo "Using year from folder path: $path_year" >&2
             fi
         fi
-    fi
-
-    # Skip @eaDir files
-    if [[ "$file" == *"@eaDir"* ]]; then
-        if [ "$VERBOSE" = true ]; then
-            echo "Skipping @eaDir file"
-        fi
-        return 1
     fi
 
     # Get filename
     local filename=$(basename "$file")
 
-    # Check for Scan- pattern first
-    if [[ "$filename" =~ ^Scan-([0-9]{2})([0-9]{2})([0-9]{2})-[0-9]+\.jpg$ ]]; then
-        if [ "$VERBOSE" = true ]; then
-            echo "Found Scan- pattern in filename"
-        fi
-
-        local yy="${BASH_REMATCH[1]}"
-        local mm="${BASH_REMATCH[2]}"
-        local dd="${BASH_REMATCH[3]}"
-
-        # Try to get time from EXIF data first
-        local exif_time=$(exiftool -DateTimeOriginal -CreateDate -s3 "$file" 2>/dev/null | head -1)
-        local file_time
-
-        if [ -n "$exif_time" ] && [[ "$exif_time" =~ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
-            # Extract time from EXIF data
-            file_time=$(echo "$exif_time" | cut -d' ' -f2)
-            if [ "$VERBOSE" = true ]; then
-                echo "Using time from EXIF data: $file_time"
-            fi
-        else
-            # Fallback to file system time
-            file_time=$(date -r "$file" "+%H:%M:%S")
-            if [ "$VERBOSE" = true ]; then
-                echo "Using time from file system: $file_time"
-            fi
-        fi
-
-        # Use forced year if provided, otherwise use 19xx
-        if [ -n "$year_to_use" ]; then
-            year="$year_to_use"
-        else
-            year="19$yy"
-        fi
-
-        if [ "$VERBOSE" = true ]; then
-            echo "Extracted date components: year=$year, month=$mm, day=$dd, time=$file_time"
-        fi
-
-        # Create timestamp using the extracted time
-        timestamp=$(date -d "$year-$mm-$dd $file_time" +%s 2>/dev/null)
-
-        if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]]; then
-            if [ "$VERBOSE" = true ]; then
-                echo "Created timestamp from Scan- filename: $(date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S")"
-            fi
-            echo "$timestamp"
-            return 0
-        fi
-
-    elif [[ "${file,,}" =~ \.(mp4|mov|avi|mkv|m4v|mpg|mpeg|mts|m2ts|wmv)$ ]]; then
-        # Get Create Date
-        create_date=$(exiftool -CreateDate -s3 "$file" 2>/dev/null)
-
-        if [[ "$create_date" =~ [0-9]{4}:[0-9]{2}:[0-9]{2}.[0-9]{2}:[0-9]{2}:[0-9]{2}\.000Z$ ]]; then
-            year=$(echo "$create_date" | cut -d: -f1)
-            month=$(echo "$create_date" | cut -d: -f2)
-            day=$(echo "$create_date" | cut -d: -f3 | cut -d' ' -f1)
-            time=$(echo "$create_date" | cut -d' ' -f2 | cut -d. -f1)
-
-            formatted_date="${year}-${month}-${day} ${time} UTC"
-            timestamp=$(date -d "$formatted_date" +%s 2>/dev/null)
-        else
-            timestamp=$(exiftool -CreateDate -MediaCreateDate -TrackCreateDate -DateTimeOriginal \
-                               -d "%s" "$file" 2>/dev/null | \
-                       awk '{print $4}' | grep -v '^$' | grep -v '^0$' | sort -n | head -1)
-        fi
-    else
-        # Regular image files
-        timestamp=$(exiftool -DateTimeOriginal -CreateDate -d "%s" "$file" 2>/dev/null | \
-                   awk '{print $4}' | grep -v '^$' | sort -n | head -1)
+    if [ "$VERBOSE" = true ]; then
+        echo "Trying to read EXIF data for: $filename" >&2
+        exiftool -time:all "$file" >&2
     fi
 
-    # Si tenemos timestamp y año forzado (para archivos que no son Scan-)
-    if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]] && [ -n "$year_to_use" ]; then
-        local date_parts=$(date -d "@$timestamp" "+%m %d %H %M %S")
-        read month day hour minute second <<< "$date_parts"
+    # For images (including CRV pattern)
+    if [[ "${file,,}" =~ \.(jpg|jpeg|png|gif|heic|crv)$ ]]; then
+        # Primero intentar obtener la fecha original
+        local exif_date=$(exiftool -DateTimeOriginal -s -s -s "$file" 2>/dev/null)
 
-        if [ "$VERBOSE" = true ]; then
-            echo "Adjusting year from $(date -d "@$timestamp" +%Y) to $year_to_use"
+        if [ -z "$exif_date" ]; then
+            # Si no hay DateTimeOriginal, intentar CreateDate
+            exif_date=$(exiftool -CreateDate -s -s -s "$file" 2>/dev/null)
         fi
 
-        timestamp=$(date -d "$year_to_use-$month-$day $hour:$minute:$second" +%s)
+        if [ -n "$exif_date" ] && [[ "$exif_date" =~ ^[0-9]{4}:[0-9]{2}:[0-9]{2}.[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+            # Convertir el formato YYYY:MM:DD HH:MM:SS a timestamp
+            if [ "$VERBOSE" = true ]; then
+                echo "Found EXIF date: $exif_date" >&2
+            fi
+
+            # Extraer componentes de la fecha
+            local exif_year=$(echo "$exif_date" | cut -d: -f1)
+            local exif_month=$(echo "$exif_date" | cut -d: -f2)
+            local exif_day=$(echo "$exif_date" | cut -d: -f3 | cut -d' ' -f1)
+            local exif_time=$(echo "$exif_date" | cut -d' ' -f2)
+
+            if [ -n "$year_to_use" ]; then
+                # Usar el año forzado pero mantener el resto de la fecha EXIF
+                timestamp=$(date -d "$year_to_use-$exif_month-$exif_day $exif_time" +%s 2>/dev/null)
+
+                if [ "$VERBOSE" = true ]; then
+                    echo "Adjusted EXIF date with forced year: $(date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S")" >&2
+                fi
+            else
+                # Usar la fecha EXIF completa
+                timestamp=$(date -d "${exif_year}-${exif_month}-${exif_day} ${exif_time}" +%s 2>/dev/null)
+            fi
+        else
+            # Intentar extraer fecha del nombre del archivo si tiene formato de fecha
+            if [[ "$filename" =~ ^[0-9]{4}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[0-9A-Z]+\.[A-Z]+$ ]]; then
+                local file_year="${filename:0:4}"
+                local file_month="${filename:4:3}"
+
+                # Convertir mes de texto a número
+                case "${file_month^^}" in
+                    JAN) month=01 ;;
+                    FEB) month=02 ;;
+                    MAR) month=03 ;;
+                    APR) month=04 ;;
+                    MAY) month=05 ;;
+                    JUN) month=06 ;;
+                    JUL) month=07 ;;
+                    AUG) month=08 ;;
+                    SEP) month=09 ;;
+                    OCT) month=10 ;;
+                    NOV) month=11 ;;
+                    DEC) month=12 ;;
+                esac
+
+                if [ "$VERBOSE" = true ]; then
+                    echo "Extracted date from filename: year=$file_year, month=$month" >&2
+                fi
+
+                # Usar el día 1 y hora actual si no se puede extraer del nombre
+                local current_time=$(date "+%H:%M:%S")
+                timestamp=$(date -d "$file_year-$month-01 $current_time" +%s 2>/dev/null)
+
+            else
+                # Como último respaldo, usar fecha de modificación
+                if [ "$VERBOSE" = true ]; then
+                    echo "No EXIF date or filename date found, using file modification time as fallback" >&2
+                fi
+
+                local file_mtime=$(stat -c %Y "$file")
+                if [ -n "$file_mtime" ] && [ -n "$year_to_use" ]; then
+                    local date_parts=$(date -d "@$file_mtime" "+%m %d %H %M %S")
+                    read month day hour minute second <<< "$date_parts"
+                    timestamp=$(date -d "$year_to_use-$month-$day $hour:$minute:$second" +%s 2>/dev/null)
+                fi
+            fi
+        fi
     fi
 
+    # Validar el timestamp final
     if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]]; then
+        if [ "$VERBOSE" = true ]; then
+            echo "Final timestamp: $(date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S")" >&2
+        fi
         echo "$timestamp"
         return 0
     fi
 
+    if [ "$VERBOSE" = true ]; then
+        echo "No valid timestamp found" >&2
+    fi
     echo ""
     return 1
 }
