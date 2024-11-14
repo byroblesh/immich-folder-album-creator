@@ -2,11 +2,12 @@
 
 # Function to show usage instructions
 show_usage() {
-    echo "Usage: $0 [-u] [-d limit] [-v] [-y year] folder_path"
+    echo "Usage: $0 [-u] [-d limit] [-v] [-y year] [-f] folder_path"
     echo "  -u          : Update dates (without this flag, only shows preview)"
     echo "  -d limit    : Debug limit - show only first 'limit' number of changes"
     echo "  -v          : Verbose mode - show detailed processing information"
     echo "  -y year     : Force specific year for dates (e.g., -y 1990)"
+    echo "  -f          : Force year from folder path if found (e.g., path/1992/file.jpg uses 1992)"
     echo "  folder_path : Path to the folder containing media files"
     exit 1
 }
@@ -16,15 +17,17 @@ UPDATE_MODE=false
 DEBUG_LIMIT=""
 VERBOSE=false
 FORCE_YEAR=""
+FORCE_FOLDER_YEAR=false
 
-while getopts "ud:vy:h" opt; do
+while getopts "ud:vy:fh" opt; do
     case $opt in
         u) UPDATE_MODE=true ;;
-        d) DEBUG_LIMIT="$OPTARG" ;;
+        d) DEBUG_LIMIT=$OPTARG ;;
         v) VERBOSE=true ;;
-        y) FORCE_YEAR="$OPTARG" ;;
+        y) FORCE_YEAR=$OPTARG ;;
+        f) FORCE_FOLDER_YEAR=true ;;
         h) show_usage ;;
-        \?) show_usage ;;
+        ?) show_usage ;;
     esac
 done
 
@@ -39,11 +42,42 @@ if [ -n "$FORCE_YEAR" ]; then
     fi
 fi
 
+# Function to extract year from path
+get_year_from_path() {
+    local file_path="$1"
+    local year_from_path
+
+    # Buscar un patrón de año (19xx o 20xx) en el path
+    if [[ "$file_path" =~ /(19[0-9]{2}|20[0-9]{2})/ ]]; then
+        year_from_path="${BASH_REMATCH[1]}"
+        if [ "$VERBOSE" = true ]; then
+            echo "Found year in path: $year_from_path"
+        fi
+        echo "$year_from_path"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
 # Function to safely get EXIF date
 get_exif_date() {
     local file="$1"
     local create_date
     local timestamp
+    local year_to_use="$FORCE_YEAR"
+
+    # If force folder year is enabled, try to get year from path
+    if [ "$FORCE_FOLDER_YEAR" = true ]; then
+        local path_year=$(get_year_from_path "$file")
+        if [ -n "$path_year" ]; then
+            year_to_use="$path_year"
+            if [ "$VERBOSE" = true ]; then
+                echo "Using year from folder path: $path_year"
+            fi
+        fi
+    fi
 
     # Skip @eaDir files
     if [[ "$file" == *"@eaDir"* ]]; then
@@ -85,9 +119,8 @@ get_exif_date() {
         fi
 
         # Use forced year if provided, otherwise use 19xx
-        local year
-        if [ -n "$FORCE_YEAR" ]; then
-            year="$FORCE_YEAR"
+        if [ -n "$year_to_use" ]; then
+            year="$year_to_use"
         else
             year="19$yy"
         fi
@@ -131,15 +164,15 @@ get_exif_date() {
     fi
 
     # Si tenemos timestamp y año forzado (para archivos que no son Scan-)
-    if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]] && [ -n "$FORCE_YEAR" ]; then
+    if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]] && [ -n "$year_to_use" ]; then
         local date_parts=$(date -d "@$timestamp" "+%m %d %H %M %S")
         read month day hour minute second <<< "$date_parts"
 
         if [ "$VERBOSE" = true ]; then
-            echo "Adjusting year from $(date -d "@$timestamp" +%Y) to $FORCE_YEAR"
+            echo "Adjusting year from $(date -d "@$timestamp" +%Y) to $year_to_use"
         fi
 
-        timestamp=$(date -d "$FORCE_YEAR-$month-$day $hour:$minute:$second" +%s)
+        timestamp=$(date -d "$year_to_use-$month-$day $hour:$minute:$second" +%s)
     fi
 
     if [ -n "$timestamp" ] && [[ "$timestamp" =~ ^[0-9]+$ ]]; then
